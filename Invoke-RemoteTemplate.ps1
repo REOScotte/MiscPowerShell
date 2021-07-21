@@ -4,7 +4,7 @@ Template for a function that supports remote computers
 
 .DESCRIPTION
 This template simplifies building functions that will flexibly run locally or remotely.
-A script is defined once in the Begin block that implements the desired flexibility. 
+A script is defined once in the Begin block that implements the desired functionality. 
 
 This function can be run locally, on a remote computer, or in an existing remote session.
 The script that's defined in the Begin block is what will run. 
