@@ -26,12 +26,12 @@ A remote computer to target
 A PSSession object to target
 
 .PARAMETER InvokeCommandParameters
-An optional set of parameters that Invoke-Command will use. This can be used to customize Invoke-Command
-to support other connection options, authentication options, throttle limits, end point specifications, etc.
-Any Parameter that Invoke-Command support can be used. This paramater is splatted to all instances of Invoke-Command
+An optional set of parameters used to customize Invoke-Command to support other connection options,
+authentication options, throttle limits, end point specifications, etc.
+Any Parameter that Invoke-Command supports can be used and this paramater is splatted to all instances of Invoke-Command.
 
-Note: This function uses the Session, ComputerName, ErrorAction, ErrorVariable, ToSession
-Specifying these Parameters will cause unexpected results, but should not be needed.
+Note: This function uses Session, ComputerName, ErrorAction, ErrorVariable, and ToSession
+Specifying these Parameters will cause unexpected results, and should not be used.
 
 .PARAMETER Variable
 An example variable
@@ -94,7 +94,7 @@ function Invoke-RemoteTemplate {
     # Steps that are unique per target can be done here as well.
     process {
         switch ($PSCmdlet.ParameterSetName) {
-            'Session'  {
+            'Session' {
                 foreach ($target in $Session) {
                     [array]$allSessions += $target
                     # Do something unique to the target
@@ -106,7 +106,7 @@ function Invoke-RemoteTemplate {
                     # Do something unique to the target
                 }
             }
-            'Local'    {
+            'Local' {
                 # Do something locally
             }
         }
@@ -134,8 +134,8 @@ function Invoke-RemoteTemplate {
             return ( $AstObject -is [System.Management.Automation.Language.AssignmentStatementAst] )
         }
         [array]$assignmentStatementAst = $beginNamedBlockAst.FindAll($predicate, $false) |
-            Select-Object @{n = 'Left'; e = { $_.Left.Extent.Text.Replace('$', '')} } |
-            Where-Object Left -notin @('$script', '$postScript') |
+            Select-Object @{n = 'Left'; e = { $_.Left.Extent.Text.Replace('$', '') } } |
+            Where-Object Left -NotIn @('$script', '$postScript') |
             Select-Object -ExpandProperty Left
 
         # Find any parameters defined in this function
@@ -148,8 +148,8 @@ function Invoke-RemoteTemplate {
         }
         [array]$parameterAst = $functionAst.FindAll($predicate, $true) |
             Where-Object { -not $_.parent.parent.parent.parent.parent.parent } |
-            Select-Object @{n = 'Name'; e = { $_.Name.Extent.Text.Replace('$', '')} } |
-            Where-Object Name -notin @('$ComputerName', '$Session') |
+            Select-Object @{n = 'Name'; e = { $_.Name.Extent.Text.Replace('$', '') } } |
+            Where-Object Name -NotIn @('$ComputerName', '$Session') |
             Select-Object -ExpandProperty Name
 
         # Create a script that imports each local variable from the $using scope. The $using statements are wrapped in
@@ -198,10 +198,10 @@ function Invoke-RemoteTemplate {
                 '*:InformationAction' = $InformationPreference
                 '*:WarningAction'     = $WarningPreference
             }
-            if ($ConfirmPreference -eq 'Low')      { $PSDefaultParameterValues += @{'*:Confirm' = $true } }
-            if ($DebugPreference   -eq 'Inquire')  { $PSDefaultParameterValues += @{'*:Debug'   = $true } }
+            if ($ConfirmPreference -eq 'Low'     ) { $PSDefaultParameterValues += @{'*:Confirm' = $true } }
+            if ($DebugPreference   -eq 'Inquire' ) { $PSDefaultParameterValues += @{'*:Debug'   = $true } }
             if ($VerbosePreference -eq 'Continue') { $PSDefaultParameterValues += @{'*:Verbose' = $true } }
-            if ($WhatIfPreference.IsPresent)       { $PSDefaultParameterValues += @{'*:WhatIf'  = $true } }
+            if ($WhatIfPreference.IsPresent      ) { $PSDefaultParameterValues += @{'*:WhatIf'  = $true } }
         }
         #endregion
 
