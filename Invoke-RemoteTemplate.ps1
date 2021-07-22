@@ -11,10 +11,10 @@ The script that's defined in the Begin block is what will run.
 
 The Process block collects a list of targets.
 
-The End block parses the AST to ensure all variables and preferences are referenced correctly and then $script
+The End block parses the AST to ensure all variables and preferences are referenced correctly and the $script
 is invoked on all the targets.
 
-Optionally, $postScript can be defined in the End block. After the main script is finished, it will be run
+Optionally, $postScript can be defined in the Begin block. After the main script is finished, it will be run
 locally to handle any needed cleanup or other tasks.
 
 Parameters can be added to the param() block, but Session, ComputerName, and InvokeCommandPreferences shouldn't be changed.
