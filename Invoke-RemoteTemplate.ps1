@@ -72,7 +72,7 @@ function Invoke-RemoteTemplate {
         [Alias('Name', 'Server', 'CN', 'PSComputerName')]
         [string[]]$ComputerName
         ,
-        [hashtable]$InvokeCommandParameters
+        [hashtable]$InvokeCommandParameters = @{}
         ,
         [string]$Variable
     )
@@ -134,9 +134,16 @@ function Invoke-RemoteTemplate {
             return ( $AstObject -is [System.Management.Automation.Language.AssignmentStatementAst] )
         }
         [array]$assignmentStatementAst = $beginNamedBlockAst.FindAll($predicate, $false) |
-            Select-Object @{n = 'Left'; e = { $_.Left.Extent.Text.Replace('$', '') } } |
-            Where-Object Left -NotIn @('$script', '$postScript') |
-            Select-Object -ExpandProperty Left
+            Select-Object @{n = 'Name'; e = {
+                    if ($_.Left.Child.VariablePath.UserPath) {
+                        $_.Left.Child.VariablePath.UserPath
+                    } else {
+                        $_.Left.VariablePath.UserPath
+                    } 
+                }
+            } |
+            Where-Object Name -NotIn @('script', 'postScript') |
+            Select-Object -ExpandProperty Name
 
         # Find any parameters defined in this function
         # The string of .parent in the where predicate limits to parameters defined in this function and excludes parameters
@@ -148,8 +155,8 @@ function Invoke-RemoteTemplate {
         }
         [array]$parameterAst = $functionAst.FindAll($predicate, $true) |
             Where-Object { -not $_.parent.parent.parent.parent.parent.parent } |
-            Select-Object @{n = 'Name'; e = { $_.Name.Extent.Text.Replace('$', '') } } |
-            Where-Object Name -NotIn @('$ComputerName', '$Session') |
+            Select-Object @{n = 'Name'; e = { $_.Name.VariablePath.UserPath } } |
+            Where-Object Name -NotIn @('ComputerName', 'Session') |
             Select-Object -ExpandProperty Name
 
         # Create a script that imports each local variable from the $using scope. The $using statements are wrapped in
@@ -158,27 +165,54 @@ function Invoke-RemoteTemplate {
         # For example, $test won't have a value if condition is false, but Ast will still see it.
         # if ($condition) {$test = 'test'}
         # PSBoundParameters is also added to pick up DynamicParameters and to pass this info to remote machines.
-        $variableScript = "`n            try {`n"
-        foreach ($localVariable in $assignmentStatementAst) {
-            if (Get-Variable | Where-Object Name -EQ $localVariable) {
-                $variableScript += "                `$$localVariable = `$using:$localVariable`n" 
+        [array]$localVariableNames = @('PSBoundParameters')
+        if ($parameterAst) { $localVariableNames += $parameterAst }
+        if ($assignmentStatementAst) { $localVariableNames += $assignmentStatementAst }
+
+        $variableScript = "`ntry {`n"
+        foreach ($localVariableName in $localVariableNames) {
+            $localVariableValue = (Get-Variable | Where-Object Name -EQ $localVariableName).Value
+            if ($localVariableValue) {
+                $variableTypeName = $localVariableValue.GetType().FullName
+                # Not all variable types cross the "using" threshold intact. Specific types can be called out here to correct for that.
+                $usingSide = switch ($variableTypeName) {
+                    'System.Management.Automation.ScriptBlock' { "[scriptblock]::Create(`$using:$localVariableName)" }
+                    'System.Security.AccessControl.DirectorySecurity' {
+                        #TODO: The Access property gets converted to the text 'System.Security.AccessControl.FileSystemAccessRule'
+                        #      An acl needs to be rebuilt here to make it across the "using" threshold. 
+                        "`$using:$localVariableName"
+                    }
+                    default { "`$using:$localVariableName" }
+                }
+                $variableScript += "    `$$localVariableName = $usingSide`n"
             }
         }
-        foreach ($localVariable in $parameterAst) {
-            if (Get-Variable | Where-Object Name -EQ $localVariable) {
-                $variableScript += "                `$$localVariable = `$using:$localVariable`n" 
-            }
-        }
-        $variableScript += "                `$PSBoundParameters = `$using:PSBoundParameters`n"
-        $variableScript += "            } catch {}`n"
+        $variableScript += "} catch {}`n"
         #endregion
 
         #region Import preference variables
+        # Find the param block
+        $predicate = {
+            param ( [System.Management.Automation.Language.Ast] $AstObject )
+            return ( $AstObject -is [System.Management.Automation.Language.ParamBlockAst] )
+        }
+        $paramBlockAst = $functionAst.FindAll($predicate, $true) | 
+            Where-Object { -not $_.Parent.Parent.Parent.Parent.Parent }
+
+        # Find the CmdletBinding attribute
+        $predicate = {
+            param ( [System.Management.Automation.Language.Ast] $AstObject )
+            return ( $AstObject -is [System.Management.Automation.Language.AttributeAst] )
+        }
+        $cmdletBindingAttributeAst = $paramBlockAst.FindAll($predicate, $true) | 
+            Where-Object { $_.TypeName.Name -eq 'CmdletBinding' }
+
+        # This scriptblock defines that param block for the function. It includes the CmdletBinding attribute found above.
+        $cmdletBindingAttribute = $cmdletBindingAttributeAst.Extent.Text
+        $paramScript = "$cmdletBindingAttribute`nparam()`n`n"
+
         # This scriptblock imports all the current preferences to ensure those settings are passed to $script.
         $preferenceScript = {
-            [CmdletBinding(SupportsShouldProcess)]
-            param()
-
             try {
                 $ConfirmPreference     = $using:ConfirmPreference
                 $DebugPreference       = $using:DebugPreference
@@ -207,7 +241,7 @@ function Invoke-RemoteTemplate {
 
         #region Assemble the 3 scripts and run it
         # The preference script and the actual script are combined into a single scriptblock.
-        $totalScript = [scriptblock]::Create($preferenceScript.ToString() + $variableScript + $script.ToString())
+        $totalScript = [scriptblock]::Create($paramScript + $preferenceScript.ToString() + $variableScript + $script.ToString())
 
         # Run the total script on all applicable targets - computers, sessions, or local.
         switch ($PSCmdlet.ParameterSetName) {
