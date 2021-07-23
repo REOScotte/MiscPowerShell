@@ -58,6 +58,8 @@ Run on Comp1 over port 8080
 Invoke-RemoteTemplate -InvokeCommandParameters @{Port = 8080}
 
 .NOTES
+To avoid variable name collisions, the End block uses variable names with the _endBlock_ prefix. 
+
 Author: Scott Crawford
 Created: 2020-09-30
 #>
@@ -117,23 +119,37 @@ function Invoke-RemoteTemplate {
     # It also handles importing the $*Preference variables into remote sessions.
     # Generally, this block should not be modified.
     end {
-        #region Get local variables to be imported into $script
-        # Parse the Ast of the current script
-        $functionAst = (Get-Command $MyInvocation.MyCommand).ScriptBlock.Ast
+        #region Parse the Abtract Syntax Tree of the current script to pull out CmdletBinding attributes,parameters, and defined variables.
+        # Get the entire AST of the function
+        $_endBlock_functionAst = (Get-Command $MyInvocation.MyCommand).ScriptBlock.Ast
 
-        # Find the begin block
-        $predicate = {
+        # Get the CmdletBinding attribute of the param block
+        $_endBlock_predicate = {
             param ( [System.Management.Automation.Language.Ast] $AstObject )
-            return ( $AstObject -is [System.Management.Automation.Language.NamedBlockAst] )
+            return ( $AstObject -is [System.Management.Automation.Language.AttributeAst] )
         }
-        $beginNamedBlockAst = $functionAst.FindAll($predicate, $true) | Where-Object BlockKind -EQ 'Begin'
+        $_endBlock_CmdletBindingAttribute = $_endBlock_functionAst.Body.ParamBlock.Attributes.FindAll($_endBlock_predicate, $false) |
+            Where-Object { $_.TypeName.FullName -eq 'CmdletBinding' } |
+            Select-Object -ExpandProperty Extent |
+            Select-Object -ExpandProperty Text
 
-        # Find any variable assignments in the begin block except for $script and $postScript
-        $predicate = {
-            param( [System.Management.Automation.Language.Ast] $AstObject )
+        # Find the parameters in the param block except for ComputerName, Session, and InvokeCommandParameters
+        $_endBlock_predicate = {
+            param ( [System.Management.Automation.Language.Ast] $AstObject )
+            return ( $AstObject -is [System.Management.Automation.Language.ParameterAst] )
+        }
+        $_endBlock_Parameters = $_endBlock_functionAst.Body.ParamBlock.Parameters.FindAll($_endBlock_predicate, $false) |
+            Where-Object { $_.Name.VariablePath.UserPath -notin @('ComputerName', 'Session', 'InvokeCommandParameters') } |
+            Select-Object -ExpandProperty Name |
+            Select-Object -ExpandProperty VariablePath |
+            Select-Object -ExpandProperty UserPath
+
+        # Find the variables assigned in the Begin block except for script and postScript
+        $_endBlock_predicate = {
+            param ( [System.Management.Automation.Language.Ast] $AstObject )
             return ( $AstObject -is [System.Management.Automation.Language.AssignmentStatementAst] )
         }
-        [array]$assignmentStatementAst = $beginNamedBlockAst.FindAll($predicate, $false) |
+        $_endBlock_BeginVariables = $_endBlock_functionAst.Body.BeginBlock.Statements.FindAll($_endBlock_predicate, $false) |
             Select-Object @{n = 'Name'; e = {
                     if ($_.Left.Child.VariablePath.UserPath) {
                         $_.Left.Child.VariablePath.UserPath
@@ -144,75 +160,63 @@ function Invoke-RemoteTemplate {
             } |
             Where-Object Name -NotIn @('script', 'postScript') |
             Select-Object -ExpandProperty Name
+        #endregion
+        
+        #region Param Script
+        # This scriptblock defines that param block for the function. It includes the CmdletBinding attribute found above.
+        # It also copies PSBoundParameters to another variable. This allows them to be visible when the script is running locally.
+        $_endBlock_PSBoundParameters = $PSBoundParameters
+        $_endBlock_ParamScript = "
+            $_endBlock_CmdletBindingAttribute
+            param()
+            
+            `$PSBoundParameters = `$_endBlock_PSBoundParameters
+        "
+        #endregion
 
-        # Find any parameters defined in this function
-        # The string of .parent in the where predicate limits to parameters defined in this function and excludes parameters
-        # defined in other param() blocks in this function. For example, the param block in the $predicate statement below.
-        # If .parent.parent.parent.parent.parent.parent exists, then the parameter isn't in the main param block.
-        $predicate = {
-            param( [System.Management.Automation.Language.Ast] $AstObject )
-            return ( $AstObject -is [System.Management.Automation.Language.ParameterAst] )
-        }
-        [array]$parameterAst = $functionAst.FindAll($predicate, $true) |
-            Where-Object { -not $_.parent.parent.parent.parent.parent.parent } |
-            Select-Object @{n = 'Name'; e = { $_.Name.VariablePath.UserPath } } |
-            Where-Object Name -NotIn @('ComputerName', 'Session') |
-            Select-Object -ExpandProperty Name
-
+        #region Variable script
         # Create a script that imports each local variable from the $using scope. The $using statements are wrapped in
         # a try/catch block since the $using scope doesn't exist when the script is executed locally and would otherwise error.
         # Ast could pick up variables that aren't always assigned, so its existence is checked before adding to the block.
         # For example, $test won't have a value if condition is false, but Ast will still see it.
         # if ($condition) {$test = 'test'}
         # PSBoundParameters is also added to pick up DynamicParameters and to pass this info to remote machines.
-        [array]$localVariableNames = @('PSBoundParameters')
-        if ($parameterAst) { $localVariableNames += $parameterAst }
-        if ($assignmentStatementAst) { $localVariableNames += $assignmentStatementAst }
 
-        $variableScript = "`ntry {`n"
-        foreach ($localVariableName in $localVariableNames) {
-            $localVariableValue = (Get-Variable | Where-Object Name -EQ $localVariableName).Value
-            if ($localVariableValue) {
-                $variableTypeName = $localVariableValue.GetType().FullName
-                # Not all variable types cross the "using" threshold intact. Specific types can be called out here to correct for that.
-                $usingSide = switch ($variableTypeName) {
-                    'System.Management.Automation.ScriptBlock' { "[scriptblock]::Create(`$using:$localVariableName)" }
-                    'System.Security.AccessControl.DirectorySecurity' {
-                        #TODO: The Access property gets converted to the text 'System.Security.AccessControl.FileSystemAccessRule'
-                        #      An acl needs to be rebuilt here to make it across the "using" threshold. 
-                        "`$using:$localVariableName"
+        $_endBlock_LocalVariableNames = @()
+        if ($_endBlock_Parameters)     { $_endBlock_LocalVariableNames += $_endBlock_Parameters     }
+        if ($_endBlock_BeginVariables) { $_endBlock_LocalVariableNames += $_endBlock_BeginVariables }
+
+        $_endBlock_VariableScript = "`ntry {`n"
+        foreach ($_endBlock_LocalVariableName in $_endBlock_LocalVariableNames) {
+            $_endBlock_LocalVariable = Get-Variable | Where-Object Name -EQ $_endBlock_LocalVariableName
+            if ($_endBlock_LocalVariable) {
+                $_endBlock_VariableValue = $_endBlock_LocalVariable.Value
+                if ($_endBlock_VariableValue) {
+                    $_endBlock_TypeName = $_endBlock_LocalVariable.Value.GetType().FullName
+
+                    # Not all variable types cross the "using" threshold intact. Specific types can be called out here to correct for that.
+                    $_endBlock_UsingSide = switch ($_endBlock_TypeName) {
+                        'System.Management.Automation.ScriptBlock' { "[scriptblock]::Create(`$using:$_endBlock_LocalVariableName)" }
+                        'System.Security.AccessControl.DirectorySecurity' {
+                            $_endBlock_TempAclSddl = $_endBlock_LocalVariable.Value.Sddl
+                            "[System.Security.AccessControl.DirectorySecurity]::new();`$$_endBlock_LocalVariableName.SetSecurityDescriptorSddlForm(`$using:_endBlock_TempAclSddl)"
+                        }
+                        default { "`$using:$_endBlock_LocalVariableName" }
                     }
-                    default { "`$using:$localVariableName" }
+                } else {
+                    $_endBlock_UsingSide = '$null'
                 }
-                $variableScript += "    `$$localVariableName = $usingSide`n"
+                $_endBlock_VariableScript += "    `$$_endBlock_LocalVariableName = $_endBlock_UsingSide`n"
             }
         }
-        $variableScript += "} catch {}`n"
+        $_endBlock_VariableScript += "    `$PSBoundParameters = `$using:_endBlock_PSBoundParameters`n"
+        $_endBlock_VariableScript += "} catch {}`n"
         #endregion
 
         #region Import preference variables
-        # Find the param block
-        $predicate = {
-            param ( [System.Management.Automation.Language.Ast] $AstObject )
-            return ( $AstObject -is [System.Management.Automation.Language.ParamBlockAst] )
-        }
-        $paramBlockAst = $functionAst.FindAll($predicate, $true) | 
-            Where-Object { -not $_.Parent.Parent.Parent.Parent.Parent }
-
-        # Find the CmdletBinding attribute
-        $predicate = {
-            param ( [System.Management.Automation.Language.Ast] $AstObject )
-            return ( $AstObject -is [System.Management.Automation.Language.AttributeAst] )
-        }
-        $cmdletBindingAttributeAst = $paramBlockAst.FindAll($predicate, $true) | 
-            Where-Object { $_.TypeName.Name -eq 'CmdletBinding' }
-
-        # This scriptblock defines that param block for the function. It includes the CmdletBinding attribute found above.
-        $cmdletBindingAttribute = $cmdletBindingAttributeAst.Extent.Text
-        $paramScript = "$cmdletBindingAttribute`nparam()`n`n"
 
         # This scriptblock imports all the current preferences to ensure those settings are passed to $script.
-        $preferenceScript = {
+        $_endBlock_PreferenceScript = {
             try {
                 $ConfirmPreference     = $using:ConfirmPreference
                 $DebugPreference       = $using:DebugPreference
@@ -239,24 +243,24 @@ function Invoke-RemoteTemplate {
         }
         #endregion
 
-        #region Assemble the 3 scripts and run it
-        # The preference script and the actual script are combined into a single scriptblock.
-        $totalScript = [scriptblock]::Create($paramScript + $preferenceScript.ToString() + $variableScript + $script.ToString())
+        #region Assemble the 4 scripts and run it
+        # The 4 scripts - Param, Variable, Preference, and the main script are combined into a single scriptblock.
+        $_endBlock_TotalScript = [scriptblock]::Create($_endBlock_ParamScript + $_endBlock_VariableScript + $_endBlock_PreferenceScript.ToString() + $script.ToString())
 
         # Run the total script on all applicable targets - computers, sessions, or local.
         switch ($PSCmdlet.ParameterSetName) {
             'Session' {
                 if ($allSessions) {
-                    Invoke-Command -Session $allSessions -ScriptBlock $totalScript -ErrorAction SilentlyContinue -ErrorVariable +ErrorVar @InvokeCommandParameters
+                    Invoke-Command -Session $allSessions -ScriptBlock $_endBlock_TotalScript -ErrorAction SilentlyContinue -ErrorVariable +ErrorVar @InvokeCommandParameters
                 }
             }
             'Computer' {
                 if ($allComputers) {
-                    Invoke-Command -ComputerName $allComputers -ScriptBlock $totalScript -ErrorAction SilentlyContinue -ErrorVariable +ErrorVar @InvokeCommandParameters
+                    Invoke-Command -ComputerName $allComputers -ScriptBlock $_endBlock_TotalScript -ErrorAction SilentlyContinue -ErrorVariable +ErrorVar @InvokeCommandParameters
                 }
             }
             'Local' {
-                & $totalScript
+                & $_endBlock_TotalScript
             }
         }
         #endregion
