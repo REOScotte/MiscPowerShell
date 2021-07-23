@@ -19,11 +19,11 @@ locally to handle any needed cleanup or other tasks.
 
 Parameters can be added to the param() block, but Session, ComputerName, and InvokeCommandPreferences shouldn't be changed.
 
-.PARAMETER ComputerName
-A remote computer to target
-
 .PARAMETER Session
 A PSSession object to target
+
+.PARAMETER ComputerName
+A remote computer to target
 
 .PARAMETER InvokeCommandParameters
 An optional set of parameters used to customize Invoke-Command to support other connection options,
@@ -60,6 +60,9 @@ Invoke-RemoteTemplate -InvokeCommandParameters @{Port = 8080}
 .NOTES
 To avoid variable name collisions, the End block uses variable names with the __ prefix. 
 
+$PSBoundParameters is not supported in a script block. To use dynamic parmeters or otherwise
+use $PSBoundParameters, assign them to a variable in the Begin block, but outside of $script
+
 Author: Scott Crawford
 Created: 2020-09-30
 #>
@@ -92,7 +95,7 @@ function Invoke-RemoteTemplate {
         }
     }
 
-    # The process block builds a collection of targets - $allSessions and $allComputers -  which are referenced in the End block.
+    # The process block builds a collection of targets - $allSessions and $allComputers - which are referenced in the End block.
     # Steps that are unique per target can be done here as well.
     process {
         switch ($PSCmdlet.ParameterSetName) {
@@ -116,7 +119,7 @@ function Invoke-RemoteTemplate {
 
     # The end block is boilerplate and handles running $script locally or on remote computers and sessions.
     # It parses the AST to set CmdletBinding attributes, parameters, and defined variables.
-    # It uses these items to build a $__TotalScript that combines these items along with preference variables and the original $script. 
+    # It uses these items to build a $__TotalScript that combines them along with preference variables and the original $script. 
     # Variables used here have a dunderbar (__) prefix to avoid name collisions.
     # This block should not be modified.
     end {
@@ -163,36 +166,31 @@ function Invoke-RemoteTemplate {
             Select-Object -ExpandProperty Name
         #endregion
         
-        #region Param Script
-        # This scriptblock defines that param block for the function. It includes the CmdletBinding attribute found above.
-        # It also copies PSBoundParameters to another variable. This allows is to be visible when the script is running locally.
-        $__PSBoundParameters = $PSBoundParameters
-        $__ParamScript = "
-            $__CmdletBindingAttribute
-            param()
-            
-            `$PSBoundParameters = `$__PSBoundParameters
-        "
-        #endregion
-
         #region Variable script
-        # Create a script that imports each local variable from the $using scope. The $using statements are wrapped in
+        # This scriptblock defines that param block for the script. It includes the CmdletBinding attribute found above.
+        # It also creates a script that imports each local variable from the $using scope. The $using statements are wrapped in
         # a try/catch block since the $using scope doesn't exist when the script is executed locally and would otherwise error.
         # Ast could pick up variables that aren't always assigned, so its existence is checked before adding to the block.
         # For example, $test won't have a value if condition is false, but Ast will still see it.
         # if ($condition) {$test = 'test'}
-        # PSBoundParameters is also added to pick up DynamicParameters and to pass this info to remote machines.
 
         $__LocalVariableNames = @()
-        if ($__Parameters)     { $__LocalVariableNames += $__Parameters     }
+        if ($__Parameters) { $__LocalVariableNames += $__Parameters }
         if ($__BeginVariables) { $__LocalVariableNames += $__BeginVariables }
 
-        $__VariableScript = "`ntry {`n"
+        $__VariableScript = "$__CmdletBindingAttribute`n"
+        $__VariableScript += "param()`n"
+        $__VariableScript += "`n"
+        
+        # Add each variable in a try/catch block
+        $__VariableScript += "try {`n"
         foreach ($__LocalVariableName in $__LocalVariableNames) {
             $__LocalVariable = Get-Variable | Where-Object Name -EQ $__LocalVariableName
             if ($__LocalVariable) {
                 $__VariableValue = $__LocalVariable.Value
-                if ($__VariableValue) {
+                if ($null -eq $__VariableValue) {
+                    $__UsingSide = '$null'
+                } else {
                     $__TypeName = $__LocalVariable.Value.GetType().FullName
 
                     # Not all variable types cross the "using" threshold seamlessly. Shims for specific types can be implemented here.
@@ -206,13 +204,10 @@ function Invoke-RemoteTemplate {
                         }
                         default { "`$using:$__LocalVariableName" }
                     }
-                } else {
-                    $__UsingSide = '$null'
                 }
                 $__VariableScript += "    `$$__LocalVariableName = $__UsingSide`n"
             }
         }
-        $__VariableScript += "    `$PSBoundParameters = `$using:__PSBoundParameters`n"
         $__VariableScript += "} catch {}`n"
         #endregion
 
@@ -246,9 +241,9 @@ function Invoke-RemoteTemplate {
         }
         #endregion
 
-        #region Assemble the 4 scripts and run it
-        # The 4 scripts - Param, Variable, Preference, and the main script are combined into a single scriptblock.
-        $__TotalScript = [scriptblock]::Create($__ParamScript + $__VariableScript + $__PreferenceScript.ToString() + $script.ToString())
+        #region Assemble the 3 scripts and run them
+        # The 3 scripts - Variable, Preference, and the main script are combined into a single scriptblock.
+        $__TotalScript = [scriptblock]::Create($__VariableScript + $__PreferenceScript.ToString() + $script.ToString())
 
         # Run the total script on all applicable targets - computers, sessions, or local.
         switch ($PSCmdlet.ParameterSetName) {
