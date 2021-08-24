@@ -200,6 +200,7 @@ function Invoke-RemoteTemplate {
                         }
                         'System.Security.AccessControl.DirectorySecurity' {
                             $__TempAclSddl = $__LocalVariable.Value.Sddl
+                            $__TempAclSddl | Out-Null # This line just suppresses the PSScriptAnalyzer error since it can't see $__TempAclSddl being used below.
                             "[System.Security.AccessControl.DirectorySecurity]::new();`$$__LocalVariableName.SetSecurityDescriptorSddlForm(`$using:__TempAclSddl)"
                         }
                         default { "`$using:$__LocalVariableName" }
