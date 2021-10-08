@@ -26,9 +26,9 @@ A PSSession object to target
 A remote computer to target
 
 .PARAMETER InvokeCommandParameters
-An optional set of parameters used to customize Invoke-Command to support other connection options,
-authentication options, throttle limits, end point specifications, etc.
-Any Parameter that Invoke-Command supports can be used and this paramater is splatted to all instances of Invoke-Command.
+This function uses Invoke-Command to execute on remote computers. This parameter customizes how Invoke-Command
+is called. This is primarily for customizing authentication and connection options, but any Parameter that
+Invoke-Command supports can be specified and will be splatted to all instances of Invoke-Command. 
 
 Note: This function uses Session, ComputerName, ErrorAction, ErrorVariable, and ToSession
 Specifying these Parameters will cause unexpected results, and should not be used.
@@ -55,7 +55,7 @@ $sessions | Invoke-RemoteTemplate
 .EXAMPLE
 Run on Comp1 over port 8080
 
-Invoke-RemoteTemplate -InvokeCommandParameters @{Port = 8080}
+Invoke-RemoteTemplate -ComputerName Comp1 -InvokeCommandParameters @{Port = 8080}
 
 .NOTES
 To avoid variable name collisions, the End block uses variable names with the __ prefix. 
