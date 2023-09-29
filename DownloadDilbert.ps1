@@ -20,11 +20,11 @@ do {
     # Get a string version of the date to use in the filename.
     $dateString = $startDate.ToString('yyyy-MM-dd')
 
-    # Full path to download to
-    $path = "$folder\$dateString.gif"
+    # Full path to download to. An extension will be added later once its determined.
+    $path = "$folder\$dateString"
 
     # Since a title may be appended to the date, check for any file that starts with the date. Download if it doesn't exist.
-    if (Test-Path -Path $path.Replace('.', '*')) {
+    if (Test-Path -Path "$path*") {
         Write-Verbose "$dateString already downloaded."
     } else {
         try {
@@ -42,7 +42,7 @@ do {
         if ($request.Content -match '<title>(?<Title>.*) - Dilbert Viewer</title>') {
             $title = $Matches.Title.Trim()
             if ($title -ne "Comic Strip on $dateString") {
-                $path = $path.Replace('.', " - $title.")
+                $path = "$path - $title".Trim(' .')
             }
         }
 
@@ -56,7 +56,11 @@ do {
         if ($picLink) {
             try {
                 # Download the pic
-                Invoke-WebRequest -UseBasicParsing -Uri $picLink -OutFile $path
+                $download = Invoke-WebRequest -UseBasicParsing -Uri $picLink -OutFile $path -PassThru
+                $extension = $download.Headers.'Content-Disposition'.Split('.')[-1].Trim('"')
+                Rename-Item -Path $path -NewName "$path.$extension"
+                #$filename = $download.Headers.'Content-Disposition'.Split('"')[-2]
+                #Rename-Item -Path $path -NewName "$path - $filename"
             } catch {
                 Write-Warning "Error downloading $dateString."
             }
