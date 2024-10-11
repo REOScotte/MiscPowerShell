@@ -5,10 +5,12 @@ $domainDNSRoot = $domain.DNSRoot
 try {
     $step = "Getting zones from domain DNS servers."
     $domainZones = Get-ADObject -Filter "objectClass -eq 'dnsZone'" -SearchBase "CN=MicrosoftDNS,DC=DomainDnsZones,$domainDN" -SearchScope OneLevel -Server "domaindnszones.$domainDNSRoot"
+
     $step = "Getting zones from forest DNS servers."
     $forestZones = Get-ADObject -Filter "objectClass -eq 'dnsZone'" -SearchBase "CN=MicrosoftDNS,DC=ForestDnsZones,$domainDN" -SearchScope OneLevel -Server "forestdnszones.$domainDNSRoot"
+
     $step = "Getting zones from domain controllers."
-    $dcZones     = Get-ADObject -Filter "objectClass -eq 'dnsZone'" -SearchBase "CN=MicrosoftDNS,CN=System,$($domain.DistinguishedName)" -SearchScope OneLevel
+    $dcZones = Get-ADObject -Filter "objectClass -eq 'dnsZone'" -SearchBase "CN=MicrosoftDNS,CN=System,$($domain.DistinguishedName)" -SearchScope OneLevel -Server $domainDNSRoot
 } catch {
     throw "Error '$_' at step '$step'"
 }
@@ -19,6 +21,7 @@ foreach ($zone in $domainZones) {
         Location          = 'Domain DNS Servers'
         Name              = $zone.Name
         DistinguishedName = $zone.DistinguishedName
+        Server            = "domaindnszones.$domainDNSRoot"
     }
 }
 
@@ -27,6 +30,7 @@ foreach ($zone in $forestZones) {
         Location          = 'Forest DNS Servers'
         Name              = $zone.Name
         DistinguishedName = $zone.DistinguishedName
+        Server            = "forestdnszones.$domainDNSRoot"
     }
 }
 
@@ -35,19 +39,20 @@ foreach ($zone in $dcZones) {
         Location          = 'All Domain Controllers'
         Name              = $zone.Name
         DistinguishedName = $zone.DistinguishedName
+        Server            = $domainDNSRoot
     }
 }
 
 $pickZone = $allZones | Out-GridView -Title 'Pick a zone to view.' -OutputMode Single
 
 try {
-    $step = "Getting records for $pickZone"
-    $records = Get-ADObject -Filter "objectClass -eq 'dnsNode'" -SearchBase $pickZone.DistinguishedName -Properties * -Server $server
+    $step = "Getting records for $($pickZone.Name)"
+    $records = Get-ADObject -Filter "objectClass -eq 'dnsNode'" -SearchBase $pickZone.DistinguishedName -Properties * -Server $pickZone.Server
 } catch {
     throw "Error $_ in step $step"
 }
 
-# Used below to decode DNS_RPC_NAME which use a form of run length encoding.
+# Used below to decode DNS_RPC_NAME which uses a form of run length encoding.
 function DecodeRLE ([byte[]]$RLE) {
     $i = 0
     $pieces = @()
@@ -151,4 +156,4 @@ foreach ($record in $records) {
     }
 }
 
-$decodedRecords | Out-GridView -OutputMode Multiple
+$decodedRecords | Out-GridView -Title $pickZone.Name -OutputMode Multiple
