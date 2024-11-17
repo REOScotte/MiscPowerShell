@@ -1,26 +1,21 @@
-﻿$root = 'C:\Users\scott\OneDrive\Source\Repos\'
-Set-Location $root
+﻿# This is the path to the root folder that holds all of the repositories.
+# Be sure to include the trailing backslash.
+$root = 'C:\Users\OneDrive\source\repos\'
 
-$repos = Get-ChildItem .git -Recurse -Directory -Force
+$repos = Get-ChildItem -Path $root -Include .git -Recurse -Directory -Force
 
-git config --global user.name REOScotte
-git config --global user.email 11577865+REOScotte@users.noreply.github.com
+# Global settings
+git config --global user.name MainName
+git config --global user.email MainEmail
 
-$evangelRepos = @(
-    'Business Intelligence'
-    'EvangelSQL'
-    'Integrations'
-    'Legacy Website'
-    'Systems.dotNet'
-    'Systems.PowerShell'
-    'Z'
+# Create groups of repositories that share the same settings.
+$group1 = @(
+    'Repo1'
+    'Repo2'
 )
 
-$jhaRepos = @(
-    'CPSOps'
-    'EPSOps'
-    'HPS'
-    'JHA'
+$group2 = @(
+    'Sub\Repo3'
 )
 
 $repos | ForEach-Object {
@@ -28,12 +23,14 @@ $repos | ForEach-Object {
     Push-Location $repo.Parent.FullName
     $path = $repo.Parent.FullName.Replace($root, '')
 
-    if ($path -in $evangelRepos) {
-        git config --local user.name Crawfords.BI
-        git config --local user.email 
-    } elseif ($path -in $JHARepos) {
-        git config --local user.name 'Scott Crawford'
-        git config --local user.email 
+    # The groups in this if block should be updated to match the groups defined above.
+    # The name and email should be updated to match the desired settings.
+    if ($path -in $group1) {
+        git config --local user.name 'First Name'
+        git config --local user.email 'First Email'
+    } elseif ($path -in $group2) {
+        git config --local user.name 'Second Name'
+        git config --local user.email 'Second Email'
     } else {
         git config --local --unset user.name
         git config --local --unset user.email
