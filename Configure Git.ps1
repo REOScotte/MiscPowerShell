@@ -2,9 +2,10 @@
 # Be sure to include the trailing backslash.
 $root = 'C:\Users\OneDrive\source\repos\'
 
+# Find all repositories in the root folder.
 $repos = Get-ChildItem -Path $root -Include .git -Recurse -Directory -Force
 
-# Global settings
+# Global settings. Update these to match the desired settings.
 git config --global user.name MainName
 git config --global user.email MainEmail
 
