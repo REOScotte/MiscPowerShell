@@ -154,7 +154,7 @@ function Get-XorHash
     Process
     {
         # Get the full path..
-        $fullpath = (Get-Item $FileName).FullName
+        $fullpath = (Get-Item -LiteralPath $FileName -Force).FullName
 
         # Create a stream to read bytes
         $stream = [System.IO.FileStream]::new($fullpath,[System.IO.FileMode]::Open,[System.IO.FileAccess]::Read)
