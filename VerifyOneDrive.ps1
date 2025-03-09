@@ -144,26 +144,25 @@ public class QuickXorHash : System.Security.Cryptography.HashAlgorithm
 Add-Type -TypeDefinition $xorhash_code -Language CSharp    
 Remove-Variable $xorhash_code
 
-function Get-XorHash
-{
+function Get-QuickXorHash {
     [cmdletbinding()]
     Param(
-        [Parameter(Mandatory=$True)]
-        [string]$FileName
+        [Parameter(Mandatory, ValueFromPipeline)]
+        [string[]]$Path
     )
-    Process
-    {
+
+    process {
         # Get the full path..
-        $fullpath = (Get-Item -LiteralPath $FileName -Force).FullName
+        $fullpath = (Get-Item -LiteralPath $Path -Force).FullName
 
         # Create a stream to read bytes
-        $stream = [System.IO.FileStream]::new($fullpath,[System.IO.FileMode]::Open,[System.IO.FileAccess]::Read)
-
+        $stream = [System.IO.FileStream]::new($fullpath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read)
+       
         # Create the hash object and do the magic
         $xorhash = [quickxorhash]::new()
         $hash = $xorhash.ComputeHash($stream)
         $b64Hash = [convert]::ToBase64String($hash)   
-
+       
         # Return
         $b64Hash
     }
@@ -245,7 +244,7 @@ $localFiles | Where-Object { ([int]$_.Attributes -band 4096) -eq 0 -and -not $_.
     } else {
         $localHash = try {
             #($_ | Get-FileHash -Algorithm SHA1 -ErrorAction Stop).Hash
-            Get-XorHash -FileName $_.FullName
+            Get-QuickXorHash -Path $_.FullName
         } catch {
             "Unable to calculate"
         }
