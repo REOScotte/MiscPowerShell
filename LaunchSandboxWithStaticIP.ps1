@@ -21,9 +21,21 @@ $maskUInt32      = [UInt32]::MaxValue -shl (32 - $prefixLength)
 $networkUInt32   = $ipUInt32 -band $maskUInt32
 $broadcastUInt32 = $networkUInt32 -bor (-bnot $maskUInt32)
 
+# Calculate the Network IP for messages.
+$netBytes = [System.BitConverter]::GetBytes([UInt32]$networkUInt32)
+[Array]::Reverse($netBytes)
+$networkIP = ([System.Net.IPAddress]::new($netBytes)).IPAddressToString
+
+# Calculate the Subnet Mask.
+$maskBytes = [System.BitConverter]::GetBytes([UInt32]$maskUInt32)
+[Array]::Reverse($maskBytes)
+$mask = ([System.Net.IPAddress]::new($maskBytes)).IPAddressToString
+
 # Start at the beginning with a null IP
-$unusedIP = $null
+$unusedIP   = $null
 $testUInt32 = $networkUInt32 + 1
+
+Write-Host "Finding a free IP in the $networkIP/$prefixLength subnet." -ForegroundColor Green
 
 # Iterate upward starting from the first available IP in the network
 while ($testUInt32 -lt $broadcastUInt32 -and -not $unusedIP) {
@@ -53,18 +65,28 @@ while ($testUInt32 -lt $broadcastUInt32 -and -not $unusedIP) {
 if ($unusedIP) {
     Write-Host "Found available IP address: $unusedIP" -ForegroundColor Green
 } else {
-    Write-Host "No available IP address found in this subnet ($gateway/$prefixLength)." -ForegroundColor Red
+    Write-Host "No available IP address found in this subnet: $networkIP/$prefixLength" -ForegroundColor Red
     return
 }
+
+$wsbPath = "$env:TEMP\SandboxWithStaticIP.wsb"
 
 $wsb = @"
 <Configuration>
   <LogonCommand>
-    <Command>powershell.exe -ExecutionPolicy Bypass -Command "New-NetIPAddress -IPAddress $unusedIP -InterfaceAlias Ethernet -DefaultGateway $gateway -AddressFamily IPv4 -PrefixLength $prefixLength; Set-DnsClientServerAddress -InterfaceAlias Ethernet -ServerAddresses $gateway"</Command>
+    <Command><![CDATA[cmd.exe /c "netsh interface ip set address name=Ethernet static $unusedIP $mask $gateway && netsh interface ip set dns name=Ethernet static $gateway"]]></Command>
   </LogonCommand>
 </Configuration>
 "@
 
-$wsb | Out-File SandboxWithStaticIP.wsb -Encoding ascii
+$wsb | Out-File -FilePath $wsbPath -Encoding ascii
 
-start SandboxWithStaticIP.wsb
+Write-Host "Starting Windows Sandbox and configuring its network with these setttings:" -ForegroundColor Green
+[PSCustomObject]@{
+    'IP Address'    = $unusedIP
+    'Subnet Mask'   = $mask
+    'Gateway'       = $gateway
+    'DNS Address'   = $gateway
+} | Format-Table
+
+Invoke-Item $wsbPath
