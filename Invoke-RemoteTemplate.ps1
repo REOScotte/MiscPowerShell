@@ -127,6 +127,12 @@ function Invoke-RemoteTemplate {
         # Get the entire AST of the function
         $__functionAst = (Get-Command $MyInvocation.MyCommand).ScriptBlock.Ast
 
+        # When this function is injected into a remote session, the Ast is slightly different.
+        # This adds the needed Body property.
+        if (-not $__functionAst.Body) {
+            $__functionAst | Add-Member -MemberType NoteProperty -Name Body -Value $__functionAst
+        }
+
         # Get the CmdletBinding attribute of the param block
         $__predicate = {
             param ( [System.Management.Automation.Language.Ast] $AstObject )
