@@ -228,6 +228,8 @@ foreach ($folderName in $DynamicGuidMap.Keys) {
     if ($folderRedirected -and -not (Test-Path -LiteralPath $oldPath)) {
         try {
             New-Item -ItemType Junction -Path $oldPath -Target $newPath -ErrorAction Stop | Out-Null
+            $junction = Get-Item -LiteralPath $oldPath -Force -ErrorAction Stop
+            $junction.Attributes = $junction.Attributes -bor [System.IO.FileAttributes]::Hidden -bor [System.IO.FileAttributes]::System
             Write-Host "Created profile junction '$oldPath' -> '$newPath'" -ForegroundColor Green
         } catch {
             Write-Warning "Could not create profile junction '$oldPath': $_"
