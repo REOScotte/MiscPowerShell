@@ -21,12 +21,12 @@ if (-not $OneDrivePath -or -not (Test-Path -Path "$OneDrivePath" -ErrorAction Ig
 Write-Host "Target OneDrive Path: $OneDrivePath`n" -ForegroundColor Green
 
 # 2. Add C# Win32 API safely
-if (-not ('KnownFoldersApi' -as [type])) {
+if (-not ('KnownFoldersApiV2' -as [type])) {
     $KnownFoldersApiDefinition = @'
     using System;
     using System.Runtime.InteropServices;
 
-    public class KnownFoldersApi
+    public class KnownFoldersApiV2
     {
         [DllImport("shell32.dll", CharSet = CharSet.Unicode, PreserveSig = false)]
         public static extern void SHSetKnownFolderPath(
@@ -43,6 +43,12 @@ if (-not ('KnownFoldersApi' -as [type])) {
             IntPtr hToken,
             out IntPtr ppszPath
         );
+
+        [DllImport("ole32.dll")]
+        public static extern int CoInitializeEx(IntPtr pvReserved, uint dwCoInit);
+
+        [DllImport("ole32.dll")]
+        public static extern void CoUninitialize();
     }
 '@
     Add-Type -TypeDefinition $KnownFoldersApiDefinition
@@ -51,14 +57,22 @@ if (-not ('KnownFoldersApi' -as [type])) {
 function Get-KnownFolderPath {
     param([Parameter(Mandatory)][Guid]$Id)
 
+    $apartment = [System.Threading.Thread]::CurrentThread.GetApartmentState()
+    $coInit = if ($apartment -eq [System.Threading.ApartmentState]::STA) { 2 } else { 0 }
+    $coInitResult = [KnownFoldersApiV2]::CoInitializeEx([IntPtr]::Zero, $coInit)
+    if ($coInitResult -lt 0) {
+        [System.Runtime.InteropServices.Marshal]::ThrowExceptionForHR($coInitResult)
+    }
+
     $pathPointer = [IntPtr]::Zero
     try {
-        [KnownFoldersApi]::SHGetKnownFolderPath($Id, 0, [IntPtr]::Zero, [ref]$pathPointer)
+        [KnownFoldersApiV2]::SHGetKnownFolderPath($Id, 0, [IntPtr]::Zero, [ref]$pathPointer)
         [System.Runtime.InteropServices.Marshal]::PtrToStringUni($pathPointer)
     } finally {
         if ($pathPointer -ne [IntPtr]::Zero) {
             [System.Runtime.InteropServices.Marshal]::FreeCoTaskMem($pathPointer)
         }
+        [KnownFoldersApiV2]::CoUninitialize()
     }
 }
 
@@ -68,7 +82,7 @@ function Set-VerifiedKnownFolderPath {
         [Parameter(Mandatory)][string]$Path
     )
 
-    [KnownFoldersApi]::SHSetKnownFolderPath($Id, 0, [IntPtr]::Zero, $Path)
+    [KnownFoldersApiV2]::SHSetKnownFolderPath($Id, 0, [IntPtr]::Zero, $Path)
     $actualPath = [System.IO.Path]::GetFullPath((Get-KnownFolderPath -Id $Id)).TrimEnd('\', '/')
     $expectedPath = [System.IO.Path]::GetFullPath($Path).TrimEnd('\', '/')
     if ($actualPath -ine $expectedPath) {
@@ -172,7 +186,6 @@ foreach ($folderName in $DynamicGuidMap.Keys) {
 
     $oldPath = Join-Path -Path "$UserProfilePath" -ChildPath "$folderName"
     $newPath = Join-Path -Path "$OneDrivePath" -ChildPath "$folderName"
-    $folderRedirected = $false
 
     if (Test-Path -LiteralPath $oldPath) {
         $sourceItem = Get-Item -LiteralPath $oldPath -Force -ErrorAction Stop
@@ -228,28 +241,8 @@ foreach ($folderName in $DynamicGuidMap.Keys) {
             continue
         }
 
-        if ($folderName -eq 'Documents') {
-            $junctionCleanupFailed = $false
-            foreach ($junctionName in @('My Pictures', 'My Music', 'My Videos')) {
-                $junctionPath = Join-Path -Path $oldPath -ChildPath $junctionName
-                $junction = Get-Item -LiteralPath $junctionPath -Force -ErrorAction SilentlyContinue
-                if ($null -ne $junction -and ($junction.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
-                    & $env:ComSpec /d /c rmdir "$junctionPath" | Out-Null
-                    if ($LASTEXITCODE -ne 0) {
-                        Write-Warning "Could not remove legacy junction '$junctionPath' (exit code $LASTEXITCODE). The source was retained and the folder was not redirected."
-                        $junctionCleanupFailed = $true
-                        break
-                    }
-                }
-            }
-            if ($junctionCleanupFailed) {
-                continue
-            }
-        }
-
         try {
             Set-VerifiedKnownFolderPath -Id $guid -Path $newPath
-            $folderRedirected = $true
             Write-Host "Updated Location Tab for '$folderName' -> '$newPath'" -ForegroundColor Green
         } catch {
             Write-Warning "Failed to update Location Tab for '$folderName': $_. The verified copy remains at '$newPath'; the source was retained."
@@ -264,56 +257,9 @@ foreach ($folderName in $DynamicGuidMap.Keys) {
     } else {
         try {
             Set-VerifiedKnownFolderPath -Id $guid -Path $newPath
-            $folderRedirected = $true
             Write-Host "Updated Location Tab for '$folderName' -> '$newPath' (source folder was absent)." -ForegroundColor Green
         } catch {
             Write-Warning "Failed to update Location Tab for '$folderName': $_"
-        }
-    }
-
-    if ($folderRedirected -and -not (Test-Path -LiteralPath $oldPath)) {
-        try {
-            New-Item -ItemType Junction -Path $oldPath -Target $newPath -ErrorAction Stop | Out-Null
-            $junction = Get-Item -LiteralPath $oldPath -Force -ErrorAction Stop
-            $junction.Attributes = $junction.Attributes -bor [System.IO.FileAttributes]::Hidden -bor [System.IO.FileAttributes]::System
-            Write-Host "Created profile junction '$oldPath' -> '$newPath'" -ForegroundColor Green
-        } catch {
-            Write-Warning "Could not create profile junction '$oldPath': $_"
-        }
-    }
-}
-
-# 5. Create compatibility junctions with original Hidden/System attributes and Deny ACL
-Write-Host "`nCreating legacy compatibility junctions in OneDrive Documents..." -ForegroundColor Cyan
-$OneDriveDocs = Join-Path -Path "$OneDrivePath" -ChildPath 'Documents'
-$OneDrivePics = Join-Path -Path "$OneDrivePath" -ChildPath 'Pictures'
-$OneDriveMusic = Join-Path -Path "$OneDrivePath" -ChildPath 'Music'
-$OneDriveVids = Join-Path -Path "$OneDrivePath" -ChildPath 'Videos'
-
-if ((-not $Folder -or 'Documents' -in $Folder) -and (Test-Path -LiteralPath $OneDriveDocs)) {
-    $compatLinks = @(
-        @{ Name = 'My Pictures'; Target = $OneDrivePics },
-        @{ Name = 'My Music'; Target = $OneDriveMusic },
-        @{ Name = 'My Videos'; Target = $OneDriveVids }
-    )
-
-    foreach ($link in $compatLinks) {
-        $linkPath = Join-Path -Path "$OneDriveDocs" -ChildPath $link.Name
-        if (-not (Test-Path -LiteralPath $linkPath) -and (Test-Path -LiteralPath $link.Target)) {
-            try {
-                New-Item -ItemType Junction -Path $linkPath -Target $link.Target -ErrorAction Stop | Out-Null
-                $item = Get-Item -LiteralPath $linkPath -Force -ErrorAction Stop
-                $item.Attributes = $item.Attributes -bor [System.IO.FileAttributes]::Hidden -bor [System.IO.FileAttributes]::System
-
-                & icacls.exe $linkPath /l /deny 'Everyone:(RD)' | Out-Null
-                if ($LASTEXITCODE -ne 0) {
-                    throw "icacls failed with exit code $LASTEXITCODE"
-                }
-
-                Write-Host " - Replicated legacy stub for: $($link.Name)" -ForegroundColor Green
-            } catch {
-                Write-Warning "Could not fully create compatibility junction '$linkPath': $_"
-            }
         }
     }
 }
