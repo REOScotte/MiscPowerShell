@@ -126,6 +126,7 @@ foreach ($folderName in $DynamicGuidMap.Keys) {
 
     $oldPath = Join-Path -Path "$UserProfilePath" -ChildPath "$folderName"
     $newPath = Join-Path -Path "$OneDrivePath" -ChildPath "$folderName"
+    $folderRedirected = $false
 
     if (Test-Path -LiteralPath $oldPath) {
         $sourceItem = Get-Item -LiteralPath $oldPath -Force -ErrorAction Stop
@@ -202,6 +203,7 @@ foreach ($folderName in $DynamicGuidMap.Keys) {
 
         try {
             [KnownFolders]::SHSetKnownFolderPath($guid, 0, [IntPtr]::Zero, $newPath)
+            $folderRedirected = $true
             Write-Host "Updated Location Tab for '$folderName' -> '$newPath'" -ForegroundColor Green
         } catch {
             Write-Warning "Failed to update Location Tab for '$folderName': $_. The verified copy remains at '$newPath'; the source was retained."
@@ -216,9 +218,19 @@ foreach ($folderName in $DynamicGuidMap.Keys) {
     } else {
         try {
             [KnownFolders]::SHSetKnownFolderPath($guid, 0, [IntPtr]::Zero, $newPath)
+            $folderRedirected = $true
             Write-Host "Updated Location Tab for '$folderName' -> '$newPath' (source folder was absent)." -ForegroundColor Green
         } catch {
             Write-Warning "Failed to update Location Tab for '$folderName': $_"
+        }
+    }
+
+    if ($folderRedirected -and -not (Test-Path -LiteralPath $oldPath)) {
+        try {
+            New-Item -ItemType Junction -Path $oldPath -Target $newPath -ErrorAction Stop | Out-Null
+            Write-Host "Created profile junction '$oldPath' -> '$newPath'" -ForegroundColor Green
+        } catch {
+            Write-Warning "Could not create profile junction '$oldPath': $_"
         }
     }
 }
