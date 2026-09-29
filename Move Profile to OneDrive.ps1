@@ -1,8 +1,4 @@
-[CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'High')]
-param(
-    [string[]]$Folder,
-    [switch]$RestartExplorer
-)
+$RestartExplorer = $false
 
 # Set error handling
 $ErrorActionPreference = 'Stop'
@@ -81,8 +77,8 @@ $DynamicGuidMap = @{}
 foreach ($group in ($FolderCandidates | Group-Object -Property RelativePath)) {
     $selected = $group.Group |
         Sort-Object `
-            @{ Expression = { if ($_.Name -eq $_.RelativePath) { 0 } else { 1 } } },
-            @{ Expression = { $_.Name.Length } } |
+        @{ Expression = { if ($_.Name -eq $_.RelativePath) { 0 } else { 1 } } },
+        @{ Expression = { $_.Name.Length } } |
         Select-Object -First 1
     $DynamicGuidMap[$group.Name] = $selected.Guid
 }
