@@ -1,5 +1,3 @@
-$RestartExplorer = $false
-
 # Set error handling
 $ErrorActionPreference = 'Stop'
 
@@ -35,63 +33,12 @@ if (-not ('KnownFoldersApiV2' -as [type])) {
             IntPtr hToken,
             string pszPath
         );
-
-        [DllImport("shell32.dll", CharSet = CharSet.Unicode, PreserveSig = false)]
-        public static extern void SHGetKnownFolderPath(
-            [MarshalAs(UnmanagedType.LPStruct)] Guid rfid,
-            uint dwFlags,
-            IntPtr hToken,
-            out IntPtr ppszPath
-        );
-
-        [DllImport("ole32.dll")]
-        public static extern int CoInitializeEx(IntPtr pvReserved, uint dwCoInit);
-
-        [DllImport("ole32.dll")]
-        public static extern void CoUninitialize();
     }
 '@
     Add-Type -TypeDefinition $KnownFoldersApiDefinition
 }
 
-function Get-KnownFolderPath {
-    param([Parameter(Mandatory)][Guid]$Id)
-
-    $apartment = [System.Threading.Thread]::CurrentThread.GetApartmentState()
-    $coInit = if ($apartment -eq [System.Threading.ApartmentState]::STA) { 2 } else { 0 }
-    $coInitResult = [KnownFoldersApiV2]::CoInitializeEx([IntPtr]::Zero, $coInit)
-    if ($coInitResult -lt 0) {
-        [System.Runtime.InteropServices.Marshal]::ThrowExceptionForHR($coInitResult)
-    }
-
-    $pathPointer = [IntPtr]::Zero
-    try {
-        [KnownFoldersApiV2]::SHGetKnownFolderPath($Id, 0, [IntPtr]::Zero, [ref]$pathPointer)
-        [System.Runtime.InteropServices.Marshal]::PtrToStringUni($pathPointer)
-    } finally {
-        if ($pathPointer -ne [IntPtr]::Zero) {
-            [System.Runtime.InteropServices.Marshal]::FreeCoTaskMem($pathPointer)
-        }
-        [KnownFoldersApiV2]::CoUninitialize()
-    }
-}
-
-function Set-VerifiedKnownFolderPath {
-    param(
-        [Parameter(Mandatory)][Guid]$Id,
-        [Parameter(Mandatory)][string]$Path
-    )
-
-    [KnownFoldersApiV2]::SHSetKnownFolderPath($Id, 0, [IntPtr]::Zero, $Path)
-    $actualPath = [System.IO.Path]::GetFullPath((Get-KnownFolderPath -Id $Id)).TrimEnd('\', '/')
-    $expectedPath = [System.IO.Path]::GetFullPath($Path).TrimEnd('\', '/')
-    if ($actualPath -ine $expectedPath) {
-        throw "Windows resolved Known Folder '$Id' to '$actualPath' instead of '$expectedPath'."
-    }
-}
-
-# 3. Dynamic Per-User Discovery via Category Filter
-$UserProfilePath = $env:USERPROFILE
+# 3. Discover the Downloads Known Folder ID
 $hklmDesc = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\FolderDescriptions'
 $userShellFoldersPath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders'
 $UserShellFolderValueNames = @(
@@ -100,181 +47,41 @@ $UserShellFolderValueNames = @(
         Select-Object -ExpandProperty Name
 )
 
-# Known Folder descriptions provide the GUIDs; include hidden folders because Windows
-# commonly marks redirected user folders as hidden or reparse points.
-$ProfileFolderNames = @(
-    Get-ChildItem -LiteralPath $UserProfilePath -Directory -Force |
-        Where-Object {
-            $_.FullName -ne $OneDrivePath -and
-            -not ($_.Attributes -band [System.IO.FileAttributes]::System)
-        } |
-        Select-Object -ExpandProperty Name
-)
-
-$FolderCandidates = @(
+$DownloadsCandidates = @(
     foreach ($node in Get-ChildItem -LiteralPath $hklmDesc) {
         $props = Get-ItemProperty -LiteralPath $node.PSPath -ErrorAction SilentlyContinue
 
-        # Category 4 = KF_CATEGORY_PERUSER; only direct profile children are eligible.
         if ($props.Category -eq 4 -and
-            $props.RelativePath -in $ProfileFolderNames -and
+            $props.RelativePath -eq 'Downloads' -and
             -not $props.ParentFolder) {
             [pscustomobject]@{
-                Name                 = $props.Name
-                RelativePath         = $props.RelativePath
-                Guid                 = $node.PSChildName
-                IsNamedRegistration  = $UserShellFolderValueNames -contains $props.Name
-                IsGuidRegistration   = $UserShellFolderValueNames -contains $node.PSChildName
+                Name                = $props.Name
+                Guid                = $node.PSChildName
+                IsNamedRegistration = $UserShellFolderValueNames -contains $props.Name
+                IsGuidRegistration  = $UserShellFolderValueNames -contains $node.PSChildName
             }
         }
     }
 )
 
-$DynamicGuidMap = @{}
-
-foreach ($group in ($FolderCandidates | Group-Object -Property RelativePath)) {
-    $selected = $group.Group |
-        Sort-Object `
+$DownloadsFolder = $DownloadsCandidates |
+    Sort-Object `
         @{ Expression = { if ($_.IsNamedRegistration) { 0 } else { 1 } } },
         @{ Expression = { if ($_.IsGuidRegistration) { 0 } else { 1 } } },
-        @{ Expression = { if ($_.Name -eq $_.RelativePath) { 0 } else { 1 } } },
+        @{ Expression = { if ($_.Name -eq 'Downloads') { 0 } else { 1 } } },
         @{ Expression = { $_.Name.Length } } |
-        Select-Object -First 1
-    $DynamicGuidMap[$group.Name] = $selected.Guid
+    Select-Object -First 1
+
+if (-not $DownloadsFolder) {
+    throw 'Could not find the Downloads Known Folder definition in the registry.'
 }
 
-if ($Folder) {
-    $UnknownFolders = @($Folder | Where-Object { -not $DynamicGuidMap.ContainsKey($_) })
-    if ($UnknownFolders.Count -gt 0) {
-        throw "Unknown or undiscovered known folder(s): $($UnknownFolders -join ', ')"
-    }
+$DownloadsGuid = [Guid]::Parse($DownloadsFolder.Guid)
+$DownloadsPath = Join-Path -Path $OneDrivePath -ChildPath 'Downloads'
 
-    foreach ($name in @($DynamicGuidMap.Keys)) {
-        if ($name -notin $Folder) {
-            $DynamicGuidMap.Remove($name)
-        }
-    }
+if (-not (Test-Path -LiteralPath $DownloadsPath)) {
+    New-Item -ItemType Directory -Path $DownloadsPath -Force | Out-Null
 }
 
-Write-Host "Dynamically discovered $($DynamicGuidMap.Count) Per-User Known Folder(s):" -ForegroundColor Cyan
-foreach ($key in $DynamicGuidMap.Keys) {
-    Write-Host " - $key : $($DynamicGuidMap[$key])"
-}
-Write-Host ''
-
-# 4. Copy and verify files before updating the Location tab
-function Get-FileSnapshot {
-    param([Parameter(Mandatory)][string]$Path)
-
-    $root = (Get-Item -LiteralPath $Path -ErrorAction Stop).FullName.TrimEnd('\', '/')
-    $snapshot = @{}
-    foreach ($file in Get-ChildItem -LiteralPath $Path -File -Recurse -Force -ErrorAction Stop) {
-        if ($file.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
-            continue
-        }
-
-        $relativePath = $file.FullName.Substring($root.Length).TrimStart('\', '/')
-        $snapshot[$relativePath] = '{0}:{1}' -f $file.Length, $file.LastWriteTimeUtc.Ticks
-    }
-
-    return $snapshot
-}
-
-foreach ($folderName in $DynamicGuidMap.Keys) {
-    $guidString = $DynamicGuidMap[$folderName]
-    $guid = [Guid]::Parse($guidString)
-
-    $oldPath = Join-Path -Path "$UserProfilePath" -ChildPath "$folderName"
-    $newPath = Join-Path -Path "$OneDrivePath" -ChildPath "$folderName"
-
-    if (Test-Path -LiteralPath $oldPath) {
-        $sourceItem = Get-Item -LiteralPath $oldPath -Force -ErrorAction Stop
-        if ($sourceItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
-            Write-Warning "Skipping '$folderName': '$oldPath' is already a junction or symbolic link."
-            continue
-        }
-    }
-
-    if (-not (Test-Path -LiteralPath $newPath)) {
-        New-Item -ItemType Directory -Path $newPath -Force | Out-Null
-    }
-
-    if (Test-Path -LiteralPath $oldPath) {
-        Write-Host "Copying contents of '$folderName' to '$newPath'..." -ForegroundColor Yellow
-
-        $roboArgs = @(
-            "$oldPath",
-            "$newPath",
-            '/E',
-            '/XJ',
-            '/COPY:DAT',
-            '/DCOPY:DAT',
-            '/R:1',
-            '/W:1',
-            '/NFL', '/NDL', '/NJH', '/NJS', '/NC', '/NP'
-        )
-        & robocopy.exe @roboArgs | Out-Null
-        $robocopyExitCode = $LASTEXITCODE
-        if ($robocopyExitCode -ge 8) {
-            Write-Warning "Robocopy failed for '$folderName' with exit code $robocopyExitCode. The source was retained and the folder was not redirected."
-            continue
-        }
-
-        try {
-            $sourceSnapshot = Get-FileSnapshot -Path $oldPath
-            $targetSnapshot = Get-FileSnapshot -Path $newPath
-            $mismatches = @(
-                foreach ($relativePath in $sourceSnapshot.Keys) {
-                    if (-not $targetSnapshot.ContainsKey($relativePath) -or
-                        $targetSnapshot[$relativePath] -ne $sourceSnapshot[$relativePath]) {
-                        $relativePath
-                    }
-                }
-            )
-        } catch {
-            Write-Warning "Could not verify the copy of '$folderName': $_. The source was retained and the folder was not redirected."
-            continue
-        }
-
-        if ($mismatches.Count -gt 0) {
-            Write-Warning "Copy verification failed for '$folderName' ($($mismatches.Count) file(s) missing or different). The source was retained and the folder was not redirected."
-            continue
-        }
-
-        try {
-            Set-VerifiedKnownFolderPath -Id $guid -Path $newPath
-            Write-Host "Updated Location Tab for '$folderName' -> '$newPath'" -ForegroundColor Green
-        } catch {
-            Write-Warning "Failed to update Location Tab for '$folderName': $_. The verified copy remains at '$newPath'; the source was retained."
-            continue
-        }
-
-        try {
-            Remove-Item -LiteralPath $oldPath -Recurse -Force -ErrorAction Stop
-        } catch {
-            Write-Warning "The folder was redirected, but the old source '$oldPath' could not be fully removed: $_"
-        }
-    } else {
-        try {
-            Set-VerifiedKnownFolderPath -Id $guid -Path $newPath
-            Write-Host "Updated Location Tab for '$folderName' -> '$newPath' (source folder was absent)." -ForegroundColor Green
-        } catch {
-            Write-Warning "Failed to update Location Tab for '$folderName': $_"
-        }
-    }
-}
-
-# 6. Restart File Explorer targeting ONLY the current user's session process
-if ($RestartExplorer) {
-    Write-Host "`nRestarting File Explorer for the current user session..." -ForegroundColor Cyan
-    $CurrentSessionId = (Get-Process -Id $PID).SessionId
-
-    $ExplorerProcesses = Get-Process -Name explorer -ErrorAction SilentlyContinue
-    foreach ($Proc in $ExplorerProcesses) {
-        if ($Proc.SessionId -eq $CurrentSessionId) {
-            Stop-Process -Id $Proc.Id -Force -ErrorAction Stop
-        }
-    }
-
-    Start-Process explorer.exe
-}
+[KnownFoldersApiV2]::SHSetKnownFolderPath($DownloadsGuid, 0, [IntPtr]::Zero, $DownloadsPath)
+Write-Host "Downloads Location set to '$DownloadsPath'. Existing files were not moved." -ForegroundColor Green
