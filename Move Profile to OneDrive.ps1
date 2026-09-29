@@ -135,10 +135,6 @@ foreach ($folderName in $DynamicGuidMap.Keys) {
         }
     }
 
-    if (-not $PSCmdlet.ShouldProcess("$oldPath -> $newPath", "Migrate known folder '$folderName'")) {
-        continue
-    }
-
     if (-not (Test-Path -LiteralPath $newPath)) {
         New-Item -ItemType Directory -Path $newPath -Force | Out-Null
     }
@@ -244,28 +240,26 @@ if ((-not $Folder -or 'Documents' -in $Folder) -and (Test-Path -LiteralPath $One
     foreach ($link in $compatLinks) {
         $linkPath = Join-Path -Path "$OneDriveDocs" -ChildPath $link.Name
         if (-not (Test-Path -LiteralPath $linkPath) -and (Test-Path -LiteralPath $link.Target)) {
-            if ($PSCmdlet.ShouldProcess($linkPath, "Create compatibility junction to '$($link.Target)'")) {
-                try {
-                    New-Item -ItemType Junction -Path $linkPath -Target $link.Target -ErrorAction Stop | Out-Null
-                    $item = Get-Item -LiteralPath $linkPath -Force -ErrorAction Stop
-                    $item.Attributes = $item.Attributes -bor [System.IO.FileAttributes]::Hidden -bor [System.IO.FileAttributes]::System
+            try {
+                New-Item -ItemType Junction -Path $linkPath -Target $link.Target -ErrorAction Stop | Out-Null
+                $item = Get-Item -LiteralPath $linkPath -Force -ErrorAction Stop
+                $item.Attributes = $item.Attributes -bor [System.IO.FileAttributes]::Hidden -bor [System.IO.FileAttributes]::System
 
-                    & icacls.exe $linkPath /l /deny 'Everyone:(RD)' | Out-Null
-                    if ($LASTEXITCODE -ne 0) {
-                        throw "icacls failed with exit code $LASTEXITCODE"
-                    }
-
-                    Write-Host " - Replicated legacy stub for: $($link.Name)" -ForegroundColor Green
-                } catch {
-                    Write-Warning "Could not fully create compatibility junction '$linkPath': $_"
+                & icacls.exe $linkPath /l /deny 'Everyone:(RD)' | Out-Null
+                if ($LASTEXITCODE -ne 0) {
+                    throw "icacls failed with exit code $LASTEXITCODE"
                 }
+
+                Write-Host " - Replicated legacy stub for: $($link.Name)" -ForegroundColor Green
+            } catch {
+                Write-Warning "Could not fully create compatibility junction '$linkPath': $_"
             }
         }
     }
 }
 
 # 6. Restart File Explorer targeting ONLY the current user's session process
-if ($RestartExplorer -and $PSCmdlet.ShouldProcess('File Explorer', 'Restart for the current user session')) {
+if ($RestartExplorer) {
     Write-Host "`nRestarting File Explorer for the current user session..." -ForegroundColor Cyan
     $CurrentSessionId = (Get-Process -Id $PID).SessionId
 
