@@ -21,12 +21,12 @@ if (-not $OneDrivePath -or -not (Test-Path -Path "$OneDrivePath" -ErrorAction Ig
 Write-Host "Target OneDrive Path: $OneDrivePath`n" -ForegroundColor Green
 
 # 2. Add C# Win32 API safely
-if (-not ('KnownFolders' -as [type])) {
+if (-not ('KnownFoldersApi' -as [type])) {
     $KnownFoldersApiDefinition = @'
     using System;
     using System.Runtime.InteropServices;
 
-    public class KnownFolders
+    public class KnownFoldersApi
     {
         [DllImport("shell32.dll", CharSet = CharSet.Unicode, PreserveSig = false)]
         public static extern void SHSetKnownFolderPath(
@@ -35,14 +35,56 @@ if (-not ('KnownFolders' -as [type])) {
             IntPtr hToken,
             string pszPath
         );
+
+        [DllImport("shell32.dll", CharSet = CharSet.Unicode, PreserveSig = false)]
+        public static extern void SHGetKnownFolderPath(
+            [MarshalAs(UnmanagedType.LPStruct)] Guid rfid,
+            uint dwFlags,
+            IntPtr hToken,
+            out IntPtr ppszPath
+        );
     }
 '@
     Add-Type -TypeDefinition $KnownFoldersApiDefinition
 }
 
+function Get-KnownFolderPath {
+    param([Parameter(Mandatory)][Guid]$Id)
+
+    $pathPointer = [IntPtr]::Zero
+    try {
+        [KnownFoldersApi]::SHGetKnownFolderPath($Id, 0, [IntPtr]::Zero, [ref]$pathPointer)
+        [System.Runtime.InteropServices.Marshal]::PtrToStringUni($pathPointer)
+    } finally {
+        if ($pathPointer -ne [IntPtr]::Zero) {
+            [System.Runtime.InteropServices.Marshal]::FreeCoTaskMem($pathPointer)
+        }
+    }
+}
+
+function Set-VerifiedKnownFolderPath {
+    param(
+        [Parameter(Mandatory)][Guid]$Id,
+        [Parameter(Mandatory)][string]$Path
+    )
+
+    [KnownFoldersApi]::SHSetKnownFolderPath($Id, 0, [IntPtr]::Zero, $Path)
+    $actualPath = [System.IO.Path]::GetFullPath((Get-KnownFolderPath -Id $Id)).TrimEnd('\', '/')
+    $expectedPath = [System.IO.Path]::GetFullPath($Path).TrimEnd('\', '/')
+    if ($actualPath -ine $expectedPath) {
+        throw "Windows resolved Known Folder '$Id' to '$actualPath' instead of '$expectedPath'."
+    }
+}
+
 # 3. Dynamic Per-User Discovery via Category Filter
 $UserProfilePath = $env:USERPROFILE
 $hklmDesc = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\FolderDescriptions'
+$userShellFoldersPath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders'
+$UserShellFolderValueNames = @(
+    (Get-ItemProperty -LiteralPath $userShellFoldersPath).PSObject.Properties |
+        Where-Object { $_.MemberType -eq 'NoteProperty' -and $_.Name -notlike 'PS*' } |
+        Select-Object -ExpandProperty Name
+)
 
 # Known Folder descriptions provide the GUIDs; include hidden folders because Windows
 # commonly marks redirected user folders as hidden or reparse points.
@@ -64,9 +106,11 @@ $FolderCandidates = @(
             $props.RelativePath -in $ProfileFolderNames -and
             -not $props.ParentFolder) {
             [pscustomobject]@{
-                Name         = $props.Name
-                RelativePath = $props.RelativePath
-                Guid         = $node.PSChildName
+                Name                 = $props.Name
+                RelativePath         = $props.RelativePath
+                Guid                 = $node.PSChildName
+                IsNamedRegistration  = $UserShellFolderValueNames -contains $props.Name
+                IsGuidRegistration   = $UserShellFolderValueNames -contains $node.PSChildName
             }
         }
     }
@@ -77,6 +121,8 @@ $DynamicGuidMap = @{}
 foreach ($group in ($FolderCandidates | Group-Object -Property RelativePath)) {
     $selected = $group.Group |
         Sort-Object `
+        @{ Expression = { if ($_.IsNamedRegistration) { 0 } else { 1 } } },
+        @{ Expression = { if ($_.IsGuidRegistration) { 0 } else { 1 } } },
         @{ Expression = { if ($_.Name -eq $_.RelativePath) { 0 } else { 1 } } },
         @{ Expression = { $_.Name.Length } } |
         Select-Object -First 1
@@ -202,7 +248,7 @@ foreach ($folderName in $DynamicGuidMap.Keys) {
         }
 
         try {
-            [KnownFolders]::SHSetKnownFolderPath($guid, 0, [IntPtr]::Zero, $newPath)
+            Set-VerifiedKnownFolderPath -Id $guid -Path $newPath
             $folderRedirected = $true
             Write-Host "Updated Location Tab for '$folderName' -> '$newPath'" -ForegroundColor Green
         } catch {
@@ -217,7 +263,7 @@ foreach ($folderName in $DynamicGuidMap.Keys) {
         }
     } else {
         try {
-            [KnownFolders]::SHSetKnownFolderPath($guid, 0, [IntPtr]::Zero, $newPath)
+            Set-VerifiedKnownFolderPath -Id $guid -Path $newPath
             $folderRedirected = $true
             Write-Host "Updated Location Tab for '$folderName' -> '$newPath' (source folder was absent)." -ForegroundColor Green
         } catch {
