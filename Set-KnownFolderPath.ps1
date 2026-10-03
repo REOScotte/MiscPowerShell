@@ -74,7 +74,9 @@ namespace KnownFolderRedirector
 "@
 
 # Compile the COM redirector once in session
-Add-Type -TypeDefinition $Code
+if (-not ("KnownFolderRedirector.Redirector" -as [type])) {
+    Add-Type -TypeDefinition $Code
+}
 
 # Pure PowerShell registry-driven GUID lookup
 function Get-KnownFolderGuid {
