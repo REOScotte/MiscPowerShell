@@ -1,4 +1,4 @@
-$Code = @"
+$Code = @'
 using System;
 using System.Runtime.InteropServices;
 
@@ -71,54 +71,128 @@ namespace KnownFolderRedirector
         KF_REDIRECT_CHECK_ONLY = 0x00000800
     }
 }
-"@
+'@
 
-# Compile the COM redirector once in session
-if (-not ("KnownFolderRedirector.Redirector" -as [type])) {
-    Add-Type -TypeDefinition $Code
-}
+# Compile the COM redirector once in the session
+Add-Type -TypeDefinition $Code
 
-# Pure PowerShell registry-driven GUID lookup
-function Get-KnownFolderGuid {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory = $true, Position = 0)]
-        [string]$Name
-    )
+# Resolves a canonical name or legacy registry string to its GUID
+function Get-KnownFolderGuidByName {
+    param([string]$Name)
 
-    # If already a valid GUID string, format and return directly
-    if ($Name -match '^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$') {
-        return $Name.ToUpper()
-    }
-
-    $BaseRegPath = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\FolderDescriptions"
+    $BaseRegPath = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\FolderDescriptions'
     $FolderKeys = Get-ChildItem -Path $BaseRegPath -ErrorAction SilentlyContinue
 
     foreach ($Key in $FolderKeys) {
         $Props = Get-ItemProperty -Path $Key.PSPath -ErrorAction SilentlyContinue
-
-        # Match against canonical Name (e.g., 'Downloads', 'Personal') 
-        # or RelativePath (e.g., 'Documents', 'Pictures') defined in registry
         if ($Props.Name -ieq $Name -or $Props.RelativePath -ieq $Name) {
             return $Key.PSChildName.Trim('{', '}').ToUpper()
         }
     }
-
-    throw "Could not find a registered Known Folder matching '$Name' in HKLM Registry."
+    return $null
 }
 
-# Redirection execution function
-function Set-KnownFolderPath {
+# Dynamically determines the Known Folder GUID given an absolute path
+function Get-KnownFolderGuidFromPath {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true, Position = 0)]
-        [string]$Folder,
+        [string]$Path
+    )
+
+    # Normalize input path (expands relative links, trailing slashes, and handles casing)
+    $TargetFolder = [System.IO.Path]::GetFullPath($Path).TrimEnd('\')
+
+    # 1. Scan HKCU User Shell Folders (Current User Active Paths)
+    $UserShellReg = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders'
+    $UserProps = Get-ItemProperty -Path $UserShellReg -ErrorAction SilentlyContinue
+
+    if ($UserProps) {
+        foreach ($Prop in $UserProps.psobject.Properties) {
+            if ($Prop.Name -in 'PSPath', 'PSParentPath', 'PSChildName', 'PSDrive', 'PSProvider') { continue }
+
+            $ExpandedPath = [Environment]::ExpandEnvironmentVariables($Prop.Value)
+            if (-not [string]::IsNullOrWhiteSpace($ExpandedPath)) {
+                $NormalizedRegPath = [System.IO.Path]::GetFullPath($ExpandedPath).TrimEnd('\')
+
+                if ($NormalizedRegPath -ieq $TargetFolder) {
+                    # If registry key name is already a GUID (e.g., Downloads)
+                    if ($Prop.Name -match '^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$' -or 
+                        $Prop.Name -match '^{?[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}}?$') {
+                        return $Prop.Name.Trim('{', '}').ToUpper()
+                    }
+
+                    # If registry key name is a legacy string (e.g., 'Personal' for Documents)
+                    $ResolvedGuid = Get-KnownFolderGuidByName -Name $Prop.Name
+                    if ($ResolvedGuid) { return $ResolvedGuid }
+                }
+            }
+        }
+    }
+
+    # 2. Scan HKLM User Shell Folders (Public / Shared Paths)
+    $PublicShellReg = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders'
+    $PublicProps = Get-ItemProperty -Path $PublicShellReg -ErrorAction SilentlyContinue
+
+    if ($PublicProps) {
+        foreach ($Prop in $PublicProps.psobject.Properties) {
+            if ($Prop.Name -in 'PSPath', 'PSParentPath', 'PSChildName', 'PSDrive', 'PSProvider') { continue }
+
+            $ExpandedPath = [Environment]::ExpandEnvironmentVariables($Prop.Value)
+            if (-not [string]::IsNullOrWhiteSpace($ExpandedPath)) {
+                $NormalizedRegPath = [System.IO.Path]::GetFullPath($ExpandedPath).TrimEnd('\')
+
+                if ($NormalizedRegPath -ieq $TargetFolder) {
+                    if ($Prop.Name -match '^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$' -or 
+                        $Prop.Name -match '^{?[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}}?$') {
+                        return $Prop.Name.Trim('{', '}').ToUpper()
+                    }
+
+                    $ResolvedGuid = Get-KnownFolderGuidByName -Name $Prop.Name
+                    if ($ResolvedGuid) { return $ResolvedGuid }
+                }
+            }
+        }
+    }
+
+    # 3. Fallback: Scan HKLM FolderDescriptions default paths (%USERPROFILE% / %PUBLIC%)
+    $BaseRegPath = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\FolderDescriptions'
+    $FolderKeys = Get-ChildItem -Path $BaseRegPath -ErrorAction SilentlyContinue
+
+    foreach ($Key in $FolderKeys) {
+        $Props = Get-ItemProperty -Path $Key.PSPath -ErrorAction SilentlyContinue
+        if ($Props.RelativePath) {
+            $Parent = $Props.ParentFolder
+            $Root = if ($Parent -in '{DF457347-3E29-4378-A67E-692640243293}', 'DF457347-3E29-4378-A67E-692640243293') {
+                $env:PUBLIC
+            } else {
+                $env:USERPROFILE
+            }
+
+            $DefaultPath = Join-Path -Path $Root -ChildPath $Props.RelativePath
+            $NormalizedDefault = [System.IO.Path]::GetFullPath($DefaultPath).TrimEnd('\')
+
+            if ($NormalizedDefault -ieq $TargetFolder) {
+                return $Key.PSChildName.Trim('{', '}').ToUpper()
+            }
+        }
+    }
+
+    throw "Could not determine a Known Folder GUID matching path: '$Path'"
+}
+
+# Redirects a folder by supplying its current path directly
+function Set-KnownFolderPathByPath {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true, Position = 0)]
+        [string]$CurrentPath,
 
         [Parameter(Mandatory = $true, Position = 1)]
         [string]$NewPath
     )
 
-    $guid = Get-KnownFolderGuid -Name $Folder
+    $guid = Get-KnownFolderGuidFromPath -Path $CurrentPath
     [KnownFolderRedirector.Redirector]::RedirectFolder($guid, $NewPath)
-    Write-Host "Successfully redirected '$Folder' [$guid] to: $NewPath"
+    Write-Host "Successfully redirected path '$CurrentPath' [$guid] to: $NewPath"
 }
