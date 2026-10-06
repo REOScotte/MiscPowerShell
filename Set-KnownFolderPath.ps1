@@ -163,7 +163,7 @@ function Get-KnownFolderGuidFromPath {
         $Props = Get-ItemProperty -Path $Key.PSPath -ErrorAction SilentlyContinue
         if ($Props.RelativePath) {
             $Parent = $Props.ParentFolder
-            $Root = if ($Parent -in '{DF457347-3E29-4378-A67E-692640243293}', '{DFDF76A2-C82A-4D63-906A-5644AC457385}') {
+            $Root = if ($Parent -in '{DF457347-3E29-4378-A67E-692640243293}', '{DFDF76A2-C82A-4D63-906A-5644AC457385}', '{A52BBA46-E9E1-435f-B3D9-28DAA648C0F6}') {
                 $env:PUBLIC
             } else {
                 $env:USERPROFILE
