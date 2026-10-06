@@ -221,6 +221,8 @@ Get-ChildItem -Path $userProfile -Directory | ForEach-Object {
     if ($currentPath -ieq $OneDrivePath) {
         Write-Host "Skipping OneDrive root folder: $currentPath" -ForegroundColor Yellow
     } else {
-       Set-KnownFolderPathByPath -CurrentPath $_.FullName -NewPath "$OneDrivePath\$($_.Name)"
+        Set-KnownFolderPathByPath -CurrentPath $_.FullName -NewPath $newPath
+        $junction = New-Item -ItemType Junction -Path $currentPath -Value $newPath
+        $junction.Attributes = $junction.Attributes -bor [System.IO.FileAttributes]::Hidden -bor [System.IO.FileAttributes]::System
     }
 }
