@@ -1,4 +1,4 @@
-$Code = @'
+Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
 
@@ -72,9 +72,6 @@ namespace KnownFolderRedirector
     }
 }
 '@
-
-# Compile the COM redirector once in the session
-Add-Type -TypeDefinition $Code
 
 # Resolves a canonical name or legacy registry string to its GUID
 function Get-KnownFolderGuidByName {
