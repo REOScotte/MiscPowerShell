@@ -196,3 +196,9 @@ function Set-KnownFolderPathByPath {
     [KnownFolderRedirector.Redirector]::RedirectFolder($guid, $NewPath)
     Write-Host "Successfully redirected path '$CurrentPath' [$guid] to: $NewPath"
 }
+
+$userProfile = $env:USERPROFILE
+
+Get-ChildItem -Path $userProfile -Directory | ForEach-Object {
+    Set-KnownFolderPathByPath -CurrentPath $_.FullName -NewPath "$env:USERPROFILE\OneDrive\$($_.Name)"
+}
