@@ -6,15 +6,44 @@ namespace KnownFolderRedirector;
 
 public static class Redirector
 {
-    [DllImport("shell32.dll", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
-    private static extern int SHSetKnownFolderPath([In] ref Guid rfid, uint dwFlags, IntPtr hToken, string pszPath);
-
     public static void RedirectFolder(string folderGuidString, string newPath)
     {
         var folderGuid = Guid.Parse(folderGuidString);
-        int hr = SHSetKnownFolderPath(ref folderGuid, 0, IntPtr.Zero, newPath);
-        if (hr < 0) Marshal.ThrowExceptionForHR(hr);
+        const KF_REDIRECT_FLAGS flags = KF_REDIRECT_FLAGS.KF_REDIRECT_COPY_CONTENTS |
+                                        KF_REDIRECT_FLAGS.KF_REDIRECT_DEL_SOURCE_CONTENTS |
+                                        KF_REDIRECT_FLAGS.KF_REDIRECT_OWNER_USER;
+
+        var manager = (IKnownFolderManager)new KnownFolderManager();
+        manager.Redirect(ref folderGuid, IntPtr.Zero, flags, newPath, 0, IntPtr.Zero, out _);
     }
+}
+
+[ComImport, Guid("4df0c730-df9d-4ae3-9153-aa6b82e9795a")]
+public class KnownFolderManager { }
+
+[ComImport, Guid("8BE2D872-86AA-4d47-B776-32CCA40C7018"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+public interface IKnownFolderManager
+{
+    // Slot placeholders to preserve COM vtable offsets up to Redirect (slot 9)
+    void _1(); void _2(); void _3(); void _4(); 
+    void _5(); void _6(); void _7(); void _8(); void _9();
+
+    void Redirect(
+        [In] ref Guid rfid,
+        [In] IntPtr hwnd,
+        [In] KF_REDIRECT_FLAGS flags,
+        [In, MarshalAs(UnmanagedType.LPWStr)] string pszTargetPath,
+        [In] uint cFolders,
+        [In] IntPtr pExclusion,
+        [Out, MarshalAs(UnmanagedType.LPWStr)] out string ppszError);
+}
+
+[Flags]
+public enum KF_REDIRECT_FLAGS : uint
+{
+    KF_REDIRECT_OWNER_USER = 0x00000004,
+    KF_REDIRECT_COPY_CONTENTS = 0x00000200,
+    KF_REDIRECT_DEL_SOURCE_CONTENTS = 0x00000400
 }
 '@
 
